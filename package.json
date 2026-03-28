@@ -1,5 +1,5 @@
 {
-  "name": "@dongdev/fca-unofficial",
+  "name": "@johnlester-0369/fca-unofficial",
   "version": "3.0.31",
   "description": "Unofficial Facebook Chat API for Node.js - Interact with Facebook Messenger programmatically",
   "main": "index.js",

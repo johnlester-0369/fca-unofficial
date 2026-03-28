@@ -1,7 +1,6 @@
 const { getType } = require("../src/utils/format");
 const { setOptions } = require("./options");
 const { loadConfig } = require("./config");
-const { checkAndUpdateVersion } = require("../func/checkUpdate");
 const loginHelper = require("./loginHelper");
 const logger = require("../func/logger");
 
@@ -27,19 +26,19 @@ if (!global.fca._errorHandlersInstalled) {
 
         // Handle fetch timeout errors gracefully
         if (errorCode === "UND_ERR_CONNECT_TIMEOUT" ||
-            errorCode === "ETIMEDOUT" ||
-            errorMessage.includes("Connect Timeout") ||
-            errorMessage.includes("fetch failed")) {
+          errorCode === "ETIMEDOUT" ||
+          errorMessage.includes("Connect Timeout") ||
+          errorMessage.includes("fetch failed")) {
           logger(`Network timeout error caught (non-fatal): ${errorMessage}`, "warn");
           return; // Don't crash, just log
         }
 
         // Handle other network errors
         if (errorCode === "ECONNREFUSED" ||
-            errorCode === "ENOTFOUND" ||
-            errorCode === "ECONNRESET" ||
-            errorMessage.includes("ECONNREFUSED") ||
-            errorMessage.includes("ENOTFOUND")) {
+          errorCode === "ENOTFOUND" ||
+          errorCode === "ECONNRESET" ||
+          errorMessage.includes("ECONNREFUSED") ||
+          errorMessage.includes("ENOTFOUND")) {
           logger(`Network connection error caught (non-fatal): ${errorMessage}`, "warn");
           return; // Don't crash, just log
         }
@@ -65,9 +64,9 @@ if (!global.fca._errorHandlersInstalled) {
 
       // Handle fetch/network errors
       if (errorCode === "UND_ERR_CONNECT_TIMEOUT" ||
-          errorCode === "ETIMEDOUT" ||
-          errorMessage.includes("Connect Timeout") ||
-          errorMessage.includes("fetch failed")) {
+        errorCode === "ETIMEDOUT" ||
+        errorMessage.includes("Connect Timeout") ||
+        errorMessage.includes("fetch failed")) {
         logger(`Uncaught network timeout error (non-fatal): ${errorMessage}`, "warn");
         return; // Don't crash
       }
@@ -117,16 +116,9 @@ function login(loginData, options, callback) {
     callback = prCallback;
   }
   const proceed = () => loginHelper(loginData.appState, loginData.Cookie, loginData.email, loginData.password, globalOptions, callback, prCallback);
-  if (config && config.autoUpdate) {
-    const p = checkAndUpdateVersion();
-    if (p && typeof p.then === "function") {
-      p.then(proceed).catch(err => callback(err));
-    } else {
-      proceed();
-    }
-  } else {
-    proceed();
-  }
+
+  proceed();
+
   return returnPromise;
 }
 

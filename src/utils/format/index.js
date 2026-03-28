@@ -11,6 +11,7 @@ const readTyp = require("./readTyp");
 const thread = require("./thread");
 const decode = require("./decode");
 const cookie = require("./cookie");
+const isReadableStream = require("./isReadableStream")
 
 module.exports = {
   getType: utils.getType,
@@ -61,4 +62,5 @@ module.exports = {
   decodeClientPayload: decode.decodeClientPayload,
 
   formatCookie: cookie.formatCookie,
+  isReadableStream: isReadableStream
 };

@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+// Removed: fs, path — were only used to load the src/database/ directory
 const { parseAndCheckLogin } = require('../../utils/client');
 const log = require('../../../func/logAdapter');
 
@@ -134,17 +133,9 @@ function formatThreadGraphQLResponse(data) {
 }
 
 module.exports = function (defaultFuncs, api, ctx) {
-  const dbFiles = fs.readdirSync(path.join(__dirname, "../../database"))
-    .filter(f => path.extname(f) === ".js")
-    .reduce((acc, file) => {
-      const mod = require(path.join(__dirname, "../../database", file));
-      acc[path.basename(file, ".js")] = typeof mod === "function" ? mod(api) : mod;
-      return acc;
-    }, {});
+  // Removed: dbFiles loader, threadData, create/get/update, FRESH_MS, loadFromDb
+  // Every call now goes directly to GraphQL — no DB cache layer
 
-  const { threadData } = dbFiles;
-  const { create, get, update } = threadData || {};
-  const FRESH_MS = 10 * 60 * 1000;
   return function getThreadInfo(threadID, callback) {
     let resolveFunc;
     let rejectFunc;
@@ -164,30 +155,6 @@ module.exports = function (defaultFuncs, api, ctx) {
     }
 
     const threadIDs = Array.isArray(threadID) ? threadID.map(String) : [String(threadID)];
-
-    const now = Date.now();
-
-    const loadFromDb = async ids => {
-      if (!threadData || typeof get !== "function") return { fresh: {}, stale: ids };
-      const fresh = {};
-      const stale = [];
-      const rows = await Promise.all(ids.map(id => get(id).catch(() => null)));
-      for (let i = 0; i < ids.length; i++) {
-        const id = ids[i];
-        const row = rows[i];
-        if (row && row.data) {
-          const updatedAt = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
-          if (updatedAt && now - updatedAt <= FRESH_MS) {
-            fresh[id] = row.data;
-          } else {
-            stale.push(id);
-          }
-        } else {
-          stale.push(id);
-        }
-      }
-      return { fresh, stale };
-    };
 
     const fetchFromGraphQL = async ids => {
       if (!ids.length) return {};
@@ -242,38 +209,12 @@ module.exports = function (defaultFuncs, api, ctx) {
 
     (async () => {
       try {
-        const { fresh, stale } = await loadFromDb(threadIDs);
-        let fetched = {};
-
-        if (stale.length) {
-          fetched = await fetchFromGraphQL(stale);
-
-          // Persist fetched data back to DB
-          if (threadData && (typeof create === "function" || typeof update === "function")) {
-            const tasks = [];
-            for (const id of stale) {
-              const info = fetched[id];
-              if (!info) continue;
-              const payload = { data: info };
-              if (typeof update === "function") {
-                tasks.push(update(id, payload).catch(() => null));
-              } else if (typeof create === "function") {
-                tasks.push(create(id, payload).catch(() => null));
-              }
-            }
-            if (tasks.length) {
-              try {
-                await Promise.all(tasks);
-              } catch {
-                // Swallow DB errors – not critical for API behavior
-              }
-            }
-          }
-        }
+        // Always fetch fresh from GraphQL — DB cache layer removed
+        const fetched = await fetchFromGraphQL(threadIDs);
 
         const resultMap = {};
         for (const id of threadIDs) {
-          resultMap[id] = fresh[id] || fetched[id] || null;
+          resultMap[id] = fetched[id] || null;
         }
 
         const result = Array.isArray(threadID)

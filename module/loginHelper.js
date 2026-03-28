@@ -2,7 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const EventEmitter = require("events");
-const models = require("../src/database/models");
+// Removed: ../src/database/models — DB backup/restore layer eliminated entirely
 const logger = require("../func/logger");
 const { get, post, jar, makeDefaults } = require("../src/utils/request");
 const { saveCookies, getAppState } = require("../src/utils/client");
@@ -279,106 +279,6 @@ function cookieHeaderFromJar(j) {
   return parts.join("; ");
 }
 
-let uniqueIndexEnsured = false;
-
-function getBackupModel() {
-  try {
-    if (!models || !models.sequelize || !models.Sequelize) return null;
-    const sequelize = models.sequelize;
-
-    // Validate that sequelize is a proper Sequelize instance
-    if (!sequelize || typeof sequelize.define !== "function") return null;
-
-    const { DataTypes } = models.Sequelize;
-    if (sequelize.models && sequelize.models.AppStateBackup) return sequelize.models.AppStateBackup;
-    const dialect = typeof sequelize.getDialect === "function" ? sequelize.getDialect() : "sqlite";
-    const LongText = (dialect === "mysql" || dialect === "mariadb") ? DataTypes.TEXT("long") : DataTypes.TEXT;
-
-    try {
-      const AppStateBackup = sequelize.define(
-        "AppStateBackup",
-        {
-          id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-          userID: { type: DataTypes.STRING, allowNull: false },
-          type: { type: DataTypes.STRING, allowNull: false },
-          data: { type: LongText }
-        },
-        { tableName: "app_state_backups", timestamps: true, indexes: [{ unique: true, fields: ["userID", "type"] }] }
-      );
-      return AppStateBackup;
-    } catch (defineError) {
-      // If define fails, log and return null
-      logger(`Failed to define AppStateBackup model: ${defineError && defineError.message ? defineError.message : String(defineError)}`, "warn");
-      return null;
-    }
-  } catch (e) {
-    // Silently handle any errors in getBackupModel
-    return null;
-  }
-}
-
-async function ensureUniqueIndex(sequelize) {
-  if (uniqueIndexEnsured || !sequelize) return;
-  try {
-    if (typeof sequelize.getQueryInterface !== "function") return;
-    await sequelize.getQueryInterface().addIndex("app_state_backups", ["userID", "type"], { unique: true, name: "app_state_user_type_unique" });
-  } catch { }
-  uniqueIndexEnsured = true;
-}
-
-async function upsertBackup(Model, userID, type, data) {
-  const where = { userID: String(userID || ""), type };
-  const row = await Model.findOne({ where });
-  if (row) {
-    await row.update({ data });
-    logger(`Overwrote existing ${type} backup for user ${where.userID}`, "info");
-    return;
-  }
-  await Model.create({ ...where, data });
-  logger(`Created new ${type} backup for user ${where.userID}`, "info");
-}
-
-async function backupAppStateSQL(j, userID) {
-  try {
-    const Model = getBackupModel();
-    if (!Model) return;
-    if (!models || !models.sequelize) return;
-    await Model.sync();
-    await ensureUniqueIndex(models.sequelize);
-    const appJson = getAppState(j);
-    const ck = cookieHeaderFromJar(j);
-    await upsertBackup(Model, userID, "appstate", JSON.stringify(appJson));
-    await upsertBackup(Model, userID, "cookie", ck);
-    logger("Backup stored (overwrite mode)", "info");
-  } catch (e) {
-    logger(`Failed to save appstate backup ${e && e.message ? e.message : String(e)}`, "warn");
-  }
-}
-
-async function getLatestBackup(userID, type) {
-  try {
-    const Model = getBackupModel();
-    if (!Model) return null;
-    const row = await Model.findOne({ where: { userID: String(userID || ""), type } });
-    return row ? row.data : null;
-  } catch {
-    return null;
-  }
-}
-
-async function getLatestBackupAny(type) {
-  try {
-    const Model = getBackupModel();
-    if (!Model) return null;
-    const row = await Model.findOne({ where: { type }, order: [["updatedAt", "DESC"]] });
-    return row ? row.data : null;
-  } catch {
-    return null;
-  }
-}
-
-
-
 async function setJarCookies(j, appstate) {
   const tasks = [];
   for (const c of appstate) {
@@ -470,41 +370,6 @@ async function tokens(username, password, twofactor = null) {
   return tokensViaAPI(username, password, twofactor);
 }
 
-async function hydrateJarFromDB(userID) {
-  try {
-    let ck = null;
-    let app = null;
-    if (userID) {
-      ck = await getLatestBackup(userID, "cookie");
-      app = await getLatestBackup(userID, "appstate");
-    } else {
-      ck = await getLatestBackupAny("cookie");
-      app = await getLatestBackupAny("appstate");
-    }
-    if (ck) {
-      const pairs = normalizeCookieHeaderString(ck);
-      if (pairs.length) {
-        setJarFromPairs(jar, pairs, ".facebook.com");
-        return true;
-      }
-    }
-    if (app) {
-      let parsed = null;
-      try {
-        parsed = JSON.parse(app);
-      } catch { }
-      if (Array.isArray(parsed)) {
-        const pairs = parsed.map(c => [c.name || c.key, c.value].join("="));
-        setJarFromPairs(jar, pairs, ".facebook.com");
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
 async function tryAutoLoginIfNeeded(currentHtml, currentCookies, globalOptions, ctxRef, hadAppStateInput = false) {
   // Helper to validate UID - must be a non-zero positive number string
   const isValidUID = uid => uid && uid !== "0" && /^\d+$/.test(uid) && parseInt(uid, 10) > 0;
@@ -532,7 +397,7 @@ async function tryAutoLoginIfNeeded(currentHtml, currentCookies, globalOptions, 
   // No valid userID found - need to try auto-login
   logger("tryAutoLoginIfNeeded: No valid userID found, attempting recovery...", "warn");
 
-  // If appState/Cookie was provided and is not checkpointed, try refresh
+  // If appState/Cookie was provided and is not checkpointed, try refresh from jar
   if (hadAppStateInput) {
     const isCheckpoint = currentHtml.includes("/checkpoint/block/?next");
     if (!isCheckpoint) {
@@ -543,29 +408,6 @@ async function tryAutoLoginIfNeeded(currentHtml, currentCookies, globalOptions, 
           return { html: currentHtml, cookies: refreshedCookies, userID };
         }
       } catch { }
-    }
-  }
-
-  // Try to hydrate from DB backup
-  const hydrated = await hydrateJarFromDB(null);
-  if (hydrated) {
-    logger("tryAutoLoginIfNeeded: Trying backup from DB...", "info");
-    try {
-      const initial = await get("https://www.facebook.com/", jar, null, globalOptions).then(saveCookies(jar));
-      const resB = (await ctxRef.bypassAutomation(initial, jar)) || initial;
-      const htmlB = resB && resB.data ? resB.data : "";
-      if (!htmlB.includes("/checkpoint/block/?next")) {
-        const htmlUserID = htmlUID(htmlB);
-        if (isValidUID(htmlUserID)) {
-          const cookiesB = await Promise.resolve(jar.getCookies("https://www.facebook.com"));
-          logger(`tryAutoLoginIfNeeded: DB backup session valid, USER_ID=${htmlUserID}`, "info");
-          return { html: htmlB, cookies: cookiesB, userID: htmlUserID };
-        } else {
-          logger(`tryAutoLoginIfNeeded: DB backup session dead (HTML USER_ID=${htmlUserID || "empty"}), will try API login...`, "warn");
-        }
-      }
-    } catch (dbErr) {
-      logger(`tryAutoLoginIfNeeded: DB backup failed - ${dbErr && dbErr.message ? dbErr.message : String(dbErr)}`, "warn");
     }
   }
 
@@ -875,12 +717,7 @@ function loginHelper(appState, Cookie, email, password, globalOptions, callback)
         const initial = await get("https://www.facebook.com/", jar, null, globalOptions).then(saveCookies(jar));
         return (await ctx.bypassAutomation(initial, jar)) || initial;
       }
-      const hydrated = await hydrateJarFromDB(null);
-      if (hydrated) {
-        logger("AppState backup live — proceeding to login", "info");
-        const initial = await get("https://www.facebook.com/", jar, null, globalOptions).then(saveCookies(jar));
-        return (await ctx.bypassAutomation(initial, jar)) || initial;
-      }
+      // No appState, no Cookie, no DB fallback — proceed directly to email/password login
       logger("AppState expired — proceeding to email/password login", "warn");
       return get("https://www.facebook.com/", null, null, globalOptions)
         .then(saveCookies(jar))
@@ -1098,28 +935,6 @@ function loginHelper(appState, Cookie, email, password, globalOptions, callback)
         }
         const tokenMatch = html.match(/DTSGInitialData.*?token":"(.*?)"/);
         if (tokenMatch) fb_dtsg = tokenMatch[1];
-        try {
-          if (userID) await backupAppStateSQL(jar, userID);
-        } catch { }
-        Promise.resolve()
-          .then(function () {
-            if (models && models.sequelize && typeof models.sequelize.authenticate === "function") {
-              return models.sequelize.authenticate();
-            }
-          })
-          .then(function () {
-            if (models && typeof models.syncAll === "function") {
-              return models.syncAll();
-            }
-          })
-          .catch(function (error) {
-            // Silently handle database errors - they're not critical for login
-            const errorMsg = error && error.message ? error.message : String(error);
-            if (!errorMsg.includes("No Sequelize instance passed")) {
-              // Only log non-Sequelize instance errors
-              logger(`Database connection failed: ${errorMsg}`, "warn");
-            }
-          });
         logger("FCA fix/update by DongDev (Donix-VN)", "info");
         const emitter = new EventEmitter();
         const ctxMain = {
@@ -1161,6 +976,7 @@ function loginHelper(appState, Cookie, email, password, globalOptions, callback)
             return false;
           }
         };
+        // Removed: getLatestAppStateFromDB, getLatestCookieFromDB — DB layer eliminated
         const api = {
           setOptions: require("./options").setOptions.bind(null, globalOptions),
           getCookies: function () {
@@ -1169,57 +985,12 @@ function loginHelper(appState, Cookie, email, password, globalOptions, callback)
           getAppState: function () {
             return getAppState(jar);
           },
-          getLatestAppStateFromDB: async function (uid = userID) {
-            const data = await getLatestBackup(uid, "appstate");
-            return data ? JSON.parse(data) : null;
-          },
-          getLatestCookieFromDB: async function (uid = userID) {
-            return await getLatestBackup(uid, "cookie");
-          },
           on: emitter.on.bind(emitter),
           once: emitter.once.bind(emitter),
           off: emitter.removeListener.bind(emitter),
           removeAllListeners: emitter.removeAllListeners.bind(emitter)
         };
         const defaultFuncs = makeDefaults(html, userID, ctxMain);
-
-        // Attach lightweight DB updaters for realtime events (MQTT)
-        try {
-          const Thread = models && models.Thread;
-          if (!Thread) {
-            throw new Error("Thread model not available");
-          }
-
-          ctxMain._updateThreadFromMessage = async msg => {
-            try {
-              if (!msg || !msg.threadID) return;
-              const id = String(msg.threadID);
-              // Fast path: increment messageCount column directly
-              let affected = 0;
-              try {
-                const res = await Thread.increment("messageCount", { by: 1, where: { threadID: id } });
-                if (Array.isArray(res) && typeof res[0] === "number") {
-                  affected = res[0];
-                }
-              } catch {
-                // Ignore increment errors, we'll try to create below
-              }
-              // If no row was updated, ensure a row exists
-              if (!affected) {
-                try {
-                  await Thread.create({ threadID: id, messageCount: 1, data: { threadID: id } });
-                } catch {
-                  // Ignore create races / duplicates
-                }
-              }
-            } catch (e) {
-              const msgText = e && e.message ? e.message : String(e);
-              logger(`updateThreadFromMessage error: ${msgText}`, "warn");
-            }
-          };
-        } catch {
-          // If DB layer is unavailable, skip realtime thread updates
-        }
 
         // Attach remote control client if enabled in config
         let remote = null;

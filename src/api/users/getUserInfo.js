@@ -187,22 +187,10 @@ module.exports = function (defaultFuncs, api, ctx) {
     };
   }
 
-  const queue = [];
-  let isProcessingQueue = false;
-  const processingUsers = new Set();
-  const queuedUsers = new Set();
-  const cooldown = new Map();
-
-  const dbFiles = fs.readdirSync(path.join(__dirname, "../../database"))
-    .filter(f => path.extname(f) === ".js")
-    .reduce((acc, file) => {
-      const mod = require(path.join(__dirname, "../../database", file));
-      acc[path.basename(file, ".js")] = typeof mod === "function" ? mod(api) : mod;
-      return acc;
-    }, {});
-  const { userData } = dbFiles;
-  const { create, get, update, getAll } = userData;
-
+  // Simple in-memory cache for user data
+  const userCache = new Map();
+  const pendingRequests = new Map(); // Deduplicate concurrent requests for same IDs
+  
   async function fetchPrimary(ids) {
     const form = {
       queries: JSON.stringify({
@@ -253,20 +241,7 @@ module.exports = function (defaultFuncs, api, ctx) {
     return n && n.id ? { [n.id]: n } : {};
   }
 
-  async function upsertUser(id, entry) {
-    try {
-      const existing = await get(id);
-      if (existing) {
-        await update(id, { data: entry });
-      } else {
-        await create(id, { data: entry });
-      }
-    } catch (e) {
-      logger(`user upsert ${id} error: ${e?.message || e}`, "warn");
-    }
-  }
-
-  async function fetchAndPersist(ids, creating = false) {
+  async function fetchAndCache(ids, useFallback = false) {
     const result = {};
     try {
       const primary = await fetchPrimary(ids);
@@ -274,7 +249,8 @@ module.exports = function (defaultFuncs, api, ctx) {
     } catch (e) {
       logger(`primary fetch error: ${e?.message || e}`, "warn");
     }
-    if (creating) {
+    
+    if (useFallback) {
       const needFallback = ids.filter(id => !result[id]);
       if (needFallback.length) {
         const tasks = needFallback.map(id => fetchV2One(id).catch(() => ({})));
@@ -287,106 +263,105 @@ module.exports = function (defaultFuncs, api, ctx) {
         }
       }
     }
+    
+    // Cache results with timestamp
+    const now = Date.now();
     for (const id of ids) {
-      const merged = result[id] || null;
-      if (merged) await upsertUser(id, merged);
+      if (result[id]) {
+        userCache.set(id, {
+          data: result[id],
+          timestamp: now
+        });
+      }
     }
+    
     return result;
   }
 
-  async function refreshAUser(id) {
+  async function getUsers(ids, useFallback = false) {
+    const now = Date.now();
+    const result = {};
+    const needFetch = [];
+    
+    // Check cache first
+    for (const id of ids) {
+      const cached = userCache.get(id);
+      if (cached && (now - cached.timestamp) < 600000) { // 10 minutes cache
+        result[id] = cached.data;
+      } else {
+        needFetch.push(id);
+      }
+    }
+    
+    if (needFetch.length === 0) {
+      return result;
+    }
+    
+    // Deduplicate concurrent requests for same IDs
+    const pendingKey = needFetch.sort().join(",");
+    if (pendingRequests.has(pendingKey)) {
+      const fetched = await pendingRequests.get(pendingKey);
+      for (const id of needFetch) {
+        result[id] = fetched[id] || null;
+      }
+      return result;
+    }
+    
+    // Fetch and cache
+    const fetchPromise = fetchAndCache(needFetch, useFallback);
+    pendingRequests.set(pendingKey, fetchPromise);
+    
     try {
-      const out = await fetchAndPersist([id], false);
-      if (!out[id]) cooldown.set(id, Date.now() + 5 * 60 * 1000);
-    } catch (e) {
-      cooldown.set(id, Date.now() + 5 * 60 * 1000);
-      logger(`refresh user ${id} error: ${e?.message || e}`, "warn");
+      const fetched = await fetchPromise;
+      for (const id of needFetch) {
+        result[id] = fetched[id] || null;
+      }
+      return result;
     } finally {
-      queuedUsers.delete(id);
+      pendingRequests.delete(pendingKey);
     }
   }
-
-  async function checkAndUpdateUsers() {
-    try {
-      const all = await getAll("userID");
-      const now = Date.now();
-      for (const row of all) {
-        const id = row.userID;
-        const cd = cooldown.get(id);
-        if (cd && now < cd) continue;
-        const lastUpdated = new Date(row.updatedAt).getTime();
-        if ((now - lastUpdated) / (1000 * 60) > 10 && !queuedUsers.has(id)) {
-          queuedUsers.add(id);
-          queue.push(() => refreshAUser(id));
-        }
-      }
-    } catch (e) {
-      logger(`checkAndUpdateUsers error: ${e?.message || e}`, "error");
-    }
-  }
-
-  async function processQueue() {
-    if (isProcessingQueue) return;
-    isProcessingQueue = true;
-    while (queue.length > 0) {
-      const task = queue.shift();
-      try {
-        await task();
-      } catch (e) {
-        logger(`user queue error: ${e?.message || e}`, "error");
-      }
-    }
-    isProcessingQueue = false;
-  }
-
-  // Store interval reference for cleanup
-  const updateInterval = setInterval(() => {
-    checkAndUpdateUsers();
-    processQueue();
-  }, 10000);
-
-  // Store interval in ctx for cleanup on logout/stop
-  if (!ctx._userInfoIntervals) {
-    ctx._userInfoIntervals = [];
-  }
-  ctx._userInfoIntervals.push(updateInterval);
 
   return function getUserInfo(idsOrId, callback) {
     let resolveFunc, rejectFunc;
-    const returnPromise = new Promise((resolve, reject) => { resolveFunc = resolve; rejectFunc = reject; });
+    const returnPromise = new Promise((resolve, reject) => { 
+      resolveFunc = resolve; 
+      rejectFunc = reject; 
+    });
+    
     if (typeof callback !== "function") {
-      callback = (err, data) => { if (err) return rejectFunc(err); resolveFunc(data); };
+      callback = (err, data) => { 
+        if (err) return rejectFunc(err); 
+        resolveFunc(data); 
+      };
     }
+    
     const ids = Array.isArray(idsOrId) ? idsOrId.map(v => String(v)) : [String(idsOrId)];
-    Promise.all(ids.map(id => get(id).catch(() => null))).then(async cachedRows => {
+    
+    getUsers(ids, true).then(fetched => {
+      // Ensure all requested IDs are present in result
       const ret = {};
-      const needCreate = [];
-      for (let i = 0; i < ids.length; i++) {
-        const id = ids[i];
-        const row = cachedRows[i];
-        if (row?.data && row.data.id) {
-          ret[id] = row.data;
+      for (const id of ids) {
+        if (fetched[id]) {
+          ret[id] = fetched[id];
         } else {
-          needCreate.push(id);
+          // Return minimal object for unfetchable users
+          ret[id] = {
+            id: id,
+            name: null,
+            firstName: null,
+            vanity: null,
+            thumbSrc: null,
+            profileUrl: null,
+            gender: null,
+            type: null,
+            isFriend: false,
+            isMessengerUser: null,
+            isMessageBlockedByViewer: false,
+            workInfo: null,
+            messengerStatus: null
+          };
         }
-      }
-      if (needCreate.length) {
-        const fetched = await fetchAndPersist(needCreate, true);
-        for (const id of needCreate) ret[id] = fetched[id] || {
-          id,
-          name: null,
-          firstName: null,
-          vanity: null,
-          thumbSrc: null,
-          profileUrl: null,
-          gender: null,
-          type: null,
-          isFriend: false,
-          isMessengerUser: null,
-          isMessageBlockedByViewer: false,
-          workInfo: null,
-          messengerStatus: null
-        };
       }
       return callback(null, ret);
     }).catch(err => {
@@ -397,6 +372,7 @@ module.exports = function (defaultFuncs, api, ctx) {
       );
       callback(err);
     });
+    
     return returnPromise;
   };
 };

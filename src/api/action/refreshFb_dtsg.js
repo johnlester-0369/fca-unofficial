@@ -26,7 +26,7 @@ module.exports = function (defaultFuncs, api, ctx) {
       get("https://www.facebook.com/", ctx.jar, null, ctx.globalOptions, { noRef: true }).then(({ data }) => {
         const fb_dtsg = getFrom(data, '["DTSGInitData",[],{"token":"', '","');
         const jazoest = getFrom(data, "jazoest=", '",');
-        if (!fb_dtsg) throw new Error("Could not find fb_dtsg in HTML after requesting Facebook.");
+
         Object.assign(ctx, { fb_dtsg, jazoest });
         callback(null, {
           data: { fb_dtsg, jazoest },

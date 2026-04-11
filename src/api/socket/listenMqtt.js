@@ -269,8 +269,9 @@ module.exports = function (defaultFuncs, api, ctx, opts) {
     const msgEmitter = new MessageEmitter();
 
     // Original callback without middleware
-    const originalCallback = callback || function (error, message) {
+    const originalCallback = callback || function (error, message, state) {
       if (error) { logger("mqtt emit error", "error"); return msgEmitter.emit("error", error); }
+      if (state) return msgEmitter.emit("state", state);
       msgEmitter.emit("message", message);
     };
 

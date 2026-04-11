@@ -170,15 +170,19 @@ module.exports = function createMiddlewareSystem() {
 
   /**
    * Wrap a callback with middleware processing
-   * @param {Function} callback - Original callback (err, event)
+   * @param {Function} callback - Original callback (err, event, state)
    * @returns {Function} Wrapped callback
    */
   function wrapCallback(callback) {
-    return function wrappedCallback(err, event) {
+    return function wrappedCallback(err, event, state) {
       if (err) {
         // Errors bypass middleware
         return callback(err, null);
       }
+
+      // State events (connect/disconnect/close/error) are lifecycle signals, not message events —
+      // skip the filter chain entirely so they always reach the consumer unmodified
+      if (state) return callback(null, null, state);
 
       if (!event) {
         return callback(null, null);

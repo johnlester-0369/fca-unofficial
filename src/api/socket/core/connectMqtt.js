@@ -123,6 +123,7 @@ module.exports = function createListenMqtt(deps) {
       if (ctx.globalOptions.autoReconnect && !ctx._ending) {
         const d = (ctx._mqttOpt && ctx._mqttOpt.reconnectDelayMs) || DEFAULT_RECONNECT_DELAY_MS;
         logger(`mqtt autoReconnect listenMqtt() in ${d}ms`, "warn");
+        globalCallback(null, null, { type: "error", error: msg });
         scheduleReconnect(d);
       } else {
         globalCallback({ type: "stop_listen", error: msg || "Connection refused" }, null);
@@ -137,6 +138,8 @@ module.exports = function createListenMqtt(deps) {
       ctx._cycling = false;
 
       topics.forEach(t => mqttClient.subscribe(t));
+      // Notify consumer immediately after subscription so they can observe session establishment
+      globalCallback(null, null, { type: "connect", userID: ctx.userID, region: ctx.region });
 
 
       const queue = {
@@ -245,6 +248,8 @@ module.exports = function createListenMqtt(deps) {
         return;
       }
       logger("mqtt connection closed", "warn");
+      // Surface unexpected close so consumer can react (e.g. update UI, alert) before autoReconnect fires
+      globalCallback(null, null, { type: "close" });
     });
 
     mqttClient.on("disconnect", () => {
@@ -253,6 +258,7 @@ module.exports = function createListenMqtt(deps) {
         return;
       }
       logger("mqtt disconnected", "warn");
+      globalCallback(null, null, { type: "disconnect" });
     });
   };
 };

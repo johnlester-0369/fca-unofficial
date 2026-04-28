@@ -20,7 +20,7 @@ const logger = require("./func/logger");
  * @param {boolean} [opts.emitLogger=false] — route logger output through fcaLogger events
  * @returns {{ login: Function, fcaLogger: EventEmitter }}
  */
-function fcaInstances({ emitLogger = false } = {}) {
+function fcaInstance({ emitLogger = false } = {}) {
   const fcaLogger = new EventEmitter();
 
   if (emitLogger) {
@@ -40,4 +40,4 @@ module.exports.login = login;
 // Support ESM `import login from "fca-unofficial"` default interop
 module.exports.default = login;
 // Named factory export for consumer-controlled logging
-module.exports.fcaInstances = fcaInstances;
+module.exports.fcaInstance = fcaInstance;

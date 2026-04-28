@@ -38,7 +38,7 @@ const logger = (text, type) => {
   process.stderr.write(chalk.bold(chalk.hex("#007bff")(`\r[ ${s.toUpperCase()} ] > ${text}`)) + "\n");
 };
 
-// Wires an EventEmitter as the log sink — called by fcaInstances() in index.js.
+// Wires an EventEmitter as the log sink — called by fcaInstance() in index.js.
 // After this call, every logger(text, type) invocation anywhere in the library
 // emits events on this emitter instead of writing to stderr.
 logger.setEmitter = (emitter) => { _emitter = emitter; };
